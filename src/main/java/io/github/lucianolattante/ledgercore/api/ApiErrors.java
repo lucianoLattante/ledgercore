@@ -20,6 +20,10 @@ class ApiErrors {
         return switch (error.reason()) {
             case ACCOUNT_NOT_FOUND -> problem(HttpStatus.NOT_FOUND, "account_not_found",
                     "The requested account is unavailable.");
+            case TRANSFER_NOT_FOUND -> problem(HttpStatus.NOT_FOUND, "transfer_not_found",
+                    "The requested transfer is unavailable.");
+            case TRANSFER_ALREADY_REVERSED -> problem(HttpStatus.CONFLICT, "transfer_already_reversed",
+                    "The requested transfer already has a reversal.");
             case TRANSFER_TO_SAME_ACCOUNT -> problem(HttpStatus.UNPROCESSABLE_ENTITY, "same_account",
                     "Debit and credit accounts must differ.");
             case CURRENCY_MISMATCH -> problem(HttpStatus.UNPROCESSABLE_ENTITY, "currency_mismatch",

@@ -19,7 +19,7 @@ class SecurityConfiguration {
     @Bean
     @Profile("demo")
     SecurityFilterChain demoApi(HttpSecurity http) throws Exception {
-        // Transfers require JSON and a custom header. Cross-origin browser requests cannot supply both.
+        // Ledger writes require a custom header, which browsers cannot send cross-origin without CORS.
         return http.csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth.requestMatchers("/api/**").authenticated()

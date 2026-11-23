@@ -75,14 +75,28 @@ Alice's balance is `74.50 ARS` after one successful transfer of `25.50 ARS`. Eac
 
 Press Ctrl+C to stop the app and run `docker compose down` to stop PostgreSQL. Compose keeps the demo volume between runs. On restart, reuse the `.env` that initialized the volume.
 
+## Reverse a transfer
+
+The original recipient can post one full reversal if their account has enough funds. Replace `TRANSFER_ID` with the ID returned by the original request:
+
+```bash
+curl -i --request POST --user "bob:${LEDGERCORE_BOB_PASSWORD}" \
+  -H 'Idempotency-Key: demo-reversal-001' \
+  http://127.0.0.1:8080/api/transfers/TRANSFER_ID/reversal
+```
+
+The first request returns `201` and a new posting with `reversesTransferId`. A replay by the same user with the same key returns `200` and the same posting. An attempt with a different key after a successful reversal returns `409 transfer_already_reversed`. If the recipient lacks funds, the API returns `409 insufficient_funds` and the key can be used again after the balance changes. Unavailable transfers, including reversals and transfers addressed to other users, return `404`.
+
+The reversal debits the original recipient and credits the original sender. Both postings remain in the journal. For the stated demo balances, reversing the transfer returns Alice to `100.00 ARS` and Bob to `50.00 ARS`.
+
 ## Tests
 
 ```bash
 mvn -B --no-transfer-progress verify
 ```
 
-The Failsafe integration suite starts disposable PostgreSQL 17 with Testcontainers. It covers balanced and immutable postings, ownership, input validation, concurrent debits, same-key retries, opposite transfers and rollback on a database write failure.
+The Failsafe integration suite starts disposable PostgreSQL 17 with Testcontainers. It covers balanced and immutable postings, ownership, input validation, concurrent debits, same-key retries, opposite transfers, reversal races and rollback on a database write failure.
 
 ## Scope
 
-The initial API uses decimal amounts with two fractional digits and same-currency transfers. Reversals, account provisioning, external identity, real payment providers and deployment are outside this increment. The demo uses local HTTP Basic authentication and fixed seed balances. Outside the `demo` profile the HTTP routes are denied.
+The API uses decimal amounts with two fractional digits and same-currency transfers. Reversals apply to the full amount and require the original recipient. Account provisioning, external identity, real payment providers and deployment are outside the demo scope. The demo uses local HTTP Basic authentication and fixed seed balances. Outside the `demo` profile the HTTP routes are denied.

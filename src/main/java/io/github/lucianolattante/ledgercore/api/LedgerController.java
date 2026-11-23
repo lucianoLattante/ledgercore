@@ -41,7 +41,17 @@ class LedgerController {
             @Valid @RequestBody TransferRequest request) {
         var command = new TransferCommand(request.debitAccountId(), request.creditAccountId(),
                 request.currency(), request.amount());
-        var result = ledger.transfer(principal.getName(), key, command);
+        return postingResponse(ledger.transfer(principal.getName(), key, command));
+    }
+
+    @PostMapping("/transfers/{transferId}/reversal")
+    ResponseEntity<PostedTransfer> reverse(
+            Principal principal, @PathVariable UUID transferId,
+            @RequestHeader("Idempotency-Key") @Pattern(regexp = "[A-Za-z0-9._-]{8,128}") String key) {
+        return postingResponse(ledger.reverse(principal.getName(), key, transferId));
+    }
+
+    private ResponseEntity<PostedTransfer> postingResponse(LedgerService.TransferResult result) {
         return ResponseEntity.status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
                 .header("Idempotency-Replayed", Boolean.toString(result.replayed()))
                 .body(result.transfer());

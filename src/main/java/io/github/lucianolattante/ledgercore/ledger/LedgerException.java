@@ -3,6 +3,8 @@ package io.github.lucianolattante.ledgercore.ledger;
 public final class LedgerException extends RuntimeException {
     public enum Reason {
         ACCOUNT_NOT_FOUND,
+        TRANSFER_NOT_FOUND,
+        TRANSFER_ALREADY_REVERSED,
         TRANSFER_TO_SAME_ACCOUNT,
         CURRENCY_MISMATCH,
         INVALID_AMOUNT,
