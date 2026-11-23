@@ -1,0 +1,12 @@
+server:
+  address: 127.0.0.1
+  error:
+    include-message: never
+spring:
+  datasource:
+    url: ${LEDGERCORE_DB_URL:jdbc:postgresql://127.0.0.1:5439/ledgercore}
+    username: ${LEDGERCORE_DB_USER}
+    password: ${LEDGERCORE_DB_PASSWORD}
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
