@@ -20,9 +20,6 @@ public class LedgerService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public TransferResult transfer(String actor, String key, TransferCommand command) {
-        if (command.debitAccountId().equals(command.creditAccountId())) {
-            throw new LedgerException(TRANSFER_TO_SAME_ACCOUNT);
-        }
         if (!store.claimRequest(actor, key)) {
             PostedTransfer existing = store.findPostedTransfer(actor, key);
             if (!existing.debitAccountId().equals(command.debitAccountId())
@@ -32,6 +29,9 @@ public class LedgerService {
                 throw new LedgerException(IDEMPOTENCY_CONFLICT);
             }
             return new TransferResult(existing, true);
+        }
+        if (command.debitAccountId().equals(command.creditAccountId())) {
+            throw new LedgerException(TRANSFER_TO_SAME_ACCOUNT);
         }
 
         var accounts = store.lockAccounts(command.debitAccountId(), command.creditAccountId());

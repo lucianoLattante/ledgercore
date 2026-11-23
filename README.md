@@ -12,18 +12,49 @@ See [ADR 001](docs/adr-001-transfer-journal.md) for locking, idempotency and tra
 
 ## Run the local demo
 
-Install Java 21, Maven 3.6.3+ and Docker Compose. The API binds to `127.0.0.1:8080` and PostgreSQL to `127.0.0.1:5439`. Use a disposable database and generate fresh local passwords.
+Install Java 21, Maven 3.6.3+ and Docker Compose. The API binds to `127.0.0.1:8080` and PostgreSQL to `127.0.0.1:5439`. Generate an ignored `.env` once and keep it with the demo database volume. PostgreSQL initializes its database credentials when it creates the volume.
+
+In Bash with OpenSSL:
 
 ```bash
-export LEDGERCORE_DB_USER=ledgercore
-export LEDGERCORE_DB_PASSWORD="$(openssl rand -hex 24)"
-export LEDGERCORE_ALICE_PASSWORD="$(openssl rand -hex 24)"
-export LEDGERCORE_BOB_PASSWORD="$(openssl rand -hex 24)"
+if [ ! -e .env ]; then
+  (
+    umask 077
+    set -C
+    {
+      printf 'LEDGERCORE_DB_USER=ledgercore\n'
+      printf 'LEDGERCORE_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)"
+      printf 'LEDGERCORE_ALICE_PASSWORD=%s\n' "$(openssl rand -hex 24)"
+      printf 'LEDGERCORE_BOB_PASSWORD=%s\n' "$(openssl rand -hex 24)"
+    } > .env
+  )
+fi
+set -a
+. ./.env
+set +a
 docker compose up -d --wait
 mvn spring-boot:run -Dspring-boot.run.profiles=demo
 ```
 
-In a second shell, run the requests below using the same demo password variables. In PowerShell, set environment variables with `$env:VARIABLE = ...` and use `curl.exe`. Start from a fresh Compose database for the stated opening balances.
+In PowerShell:
+
+```powershell
+if (!(Test-Path -LiteralPath .env)) {
+    @(
+        'LEDGERCORE_DB_USER=ledgercore'
+        "LEDGERCORE_DB_PASSWORD=$([guid]::NewGuid().ToString('N'))"
+        "LEDGERCORE_ALICE_PASSWORD=$([guid]::NewGuid().ToString('N'))"
+        "LEDGERCORE_BOB_PASSWORD=$([guid]::NewGuid().ToString('N'))"
+    ) | Set-Content -LiteralPath .env -Encoding ascii
+}
+(ConvertFrom-StringData (Get-Content -LiteralPath .env -Raw)).GetEnumerator() | ForEach-Object {
+    [Environment]::SetEnvironmentVariable($_.Key, $_.Value)
+}
+docker compose up -d --wait
+mvn spring-boot:run '-Dspring-boot.run.profiles=demo'
+```
+
+Open a second shell in the repository and load `.env` using the same shell-specific commands before running the requests. The examples below use Bash. To call the API from PowerShell, use `Invoke-RestMethod` with a Basic credential and the same request headers and JSON. The stated balances assume a fresh Compose database.
 
 ```bash
 curl -i --user "alice:${LEDGERCORE_ALICE_PASSWORD}" \
@@ -42,7 +73,7 @@ curl --user "alice:${LEDGERCORE_ALICE_PASSWORD}" \
 
 Alice's balance is `74.50 ARS` after one successful transfer of `25.50 ARS`. Each demo user can read their own accounts. Only the owner of the debit account can initiate a transfer. The API returns `404` for unavailable accounts, `422` for same-account or currency violations, and `409 insufficient_funds` for overdrafts.
 
-Press Ctrl+C to stop the app and run `docker compose down` to stop PostgreSQL. Compose keeps the demo volume between runs.
+Press Ctrl+C to stop the app and run `docker compose down` to stop PostgreSQL. Compose keeps the demo volume between runs. On restart, reuse the `.env` that initialized the volume.
 
 ## Tests
 

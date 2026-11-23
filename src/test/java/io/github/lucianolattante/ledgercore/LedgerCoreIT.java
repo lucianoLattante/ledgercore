@@ -80,6 +80,8 @@ class LedgerCoreIT {
         assertThat(replay.getResponse().getHeader("Idempotency-Replayed")).isEqualTo("true");
         assertThat(body(replay)).isEqualTo(body(first));
         assertProblem(conflict, 409, "idempotency_conflict");
+        assertProblem(transfer("alice", key, alice, alice, "ARS", "25.50"), 409, "idempotency_conflict");
+        assertProblem(transfer("alice", key, alice, bob, "USD", "25.50"), 409, "idempotency_conflict");
 
         UUID transferId = UUID.fromString(body(first).get("id").asText());
         assertThat(jdbc.sql("SELECT delta FROM journal_entry WHERE transfer_id = :id ORDER BY delta")
@@ -183,6 +185,8 @@ class LedgerCoreIT {
         assertProblem(transfer("alice", key, alice, bob, "ARS", "1E+2147483647"), 400, "invalid_request");
         assertProblem(transfer("alice", "short", alice, bob, "ARS", "1.00"), 400, "invalid_request");
         assertBalance("alice", alice, "100.00");
+        assertThat(status(transfer("alice", key, alice, bob, "ARS", "1.00"))).isEqualTo(201);
+        assertBalance("alice", alice, "99.00");
     }
 
     private UUID account(String actor, String currency, String amount) {
