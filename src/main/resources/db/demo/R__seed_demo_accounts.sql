@@ -1,0 +1,6 @@
+INSERT INTO ledger_account (id, owner_name, currency, opening_balance) VALUES
+    ('00000000-0000-0000-0000-000000000001', 'alice', 'ARS', 100.00),
+    ('00000000-0000-0000-0000-000000000002', 'bob', 'ARS', 50.00),
+    ('00000000-0000-0000-0000-000000000003', 'bob', 'USD', 25.00),
+    ('00000000-0000-0000-0000-000000000004', 'bob', 'ARS', 0.00)
+ON CONFLICT (id) DO NOTHING;
