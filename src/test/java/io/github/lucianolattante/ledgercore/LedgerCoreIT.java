@@ -134,6 +134,63 @@ class LedgerCoreIT {
     }
 
     @Test
+    void onlyTheRecipientCanReverseAndRetryTheSameTransfer() throws Exception {
+        var original = transfer("alice", UUID.randomUUID().toString(), alice, bob, "ARS", "25.00");
+        assertThat(status(original)).isEqualTo(201);
+        assertThat(body(original).has("reversesTransferId")).isFalse();
+        var originalId = UUID.fromString(body(original).get("id").asText());
+        String key = UUID.randomUUID().toString();
+        assertProblem(reversal("alice", key, originalId), 404, "transfer_not_found");
+
+        var reversed = reversal("bob", key, originalId);
+        var replay = reversal("bob", key, originalId);
+        assertThat(status(reversed)).isEqualTo(201);
+        assertThat(status(replay)).isEqualTo(200);
+        assertThat(replay.getResponse().getHeader("Idempotency-Replayed")).isEqualTo("true");
+        assertThat(body(replay)).isEqualTo(body(reversed));
+        assertThat(body(reversed).get("reversesTransferId").asText()).isEqualTo(originalId.toString());
+        assertProblem(transfer("bob", key, bob, alice, "ARS", "25.00"), 409, "idempotency_conflict");
+        assertProblem(reversal("bob", UUID.randomUUID().toString(), originalId), 409, "transfer_already_reversed");
+        assertBalance("alice", alice, "100.00");
+        assertBalance("bob", bob, "50.00");
+    }
+
+    @Test
+    void concurrentReversalsUsingDifferentKeysCannotPostTwice() throws Exception {
+        var original = transfer("alice", UUID.randomUUID().toString(), alice, bob, "ARS", "80.00");
+        assertThat(status(original)).isEqualTo(201);
+        var id = UUID.fromString(body(original).get("id").asText());
+        var results = race(
+                () -> reversal("bob", UUID.randomUUID().toString(), id),
+                () -> reversal("bob", UUID.randomUUID().toString(), id));
+        assertThat(new int[]{status(results.first()), status(results.second())}).containsExactlyInAnyOrder(201, 409);
+        assertProblem(status(results.first()) == 409 ? results.first() : results.second(), 409,
+                "transfer_already_reversed");
+        assertBalance("alice", alice, "100.00");
+        assertBalance("bob", bob, "50.00");
+    }
+
+    @Test
+    void insufficientFundsLeaveTheOriginalAndReleaseTheReversalKey() throws Exception {
+        var original = transfer("alice", UUID.randomUUID().toString(), alice, bob, "ARS", "25.00");
+        assertThat(status(original)).isEqualTo(201);
+        var id = UUID.fromString(body(original).get("id").asText());
+        assertThat(status(transfer("bob", UUID.randomUUID().toString(), bob, bobReserve, "ARS", "70.00")))
+                .isEqualTo(201);
+        String key = UUID.randomUUID().toString();
+        assertProblem(reversal("bob", key, id), 409, "insufficient_funds");
+        assertBalance("alice", alice, "75.00");
+        assertBalance("bob", bob, "5.00");
+
+        assertThat(status(transfer("alice", UUID.randomUUID().toString(), alice, bob, "ARS", "20.00")))
+                .isEqualTo(201);
+        assertThat(status(reversal("bob", key, id))).isEqualTo(201);
+        assertBalance("alice", alice, "80.00");
+        assertBalance("bob", bob, "0.00");
+        assertBalance("bob", bobReserve, "70.00");
+    }
+
+    @Test
     void journalWriteFailureRollsBackBothEntriesAndReleasesTheRequestKey() throws Exception {
         String key = UUID.randomUUID().toString();
         jdbc.sql("""
@@ -203,6 +260,11 @@ class LedgerCoreIT {
                 {"debitAccountId":"%s","creditAccountId":"%s","currency":"%s","amount":%s}
                 """.formatted(from, to, currency, amount);
         return http.perform(post("/api/transfers").contentType(MediaType.APPLICATION_JSON).content(request)
+                .header("Authorization", basic(actor)).header("Idempotency-Key", key)).andReturn();
+    }
+
+    private MvcResult reversal(String actor, String key, UUID transferId) throws Exception {
+        return http.perform(post("/api/transfers/{id}/reversal", transferId)
                 .header("Authorization", basic(actor)).header("Idempotency-Key", key)).andReturn();
     }
 

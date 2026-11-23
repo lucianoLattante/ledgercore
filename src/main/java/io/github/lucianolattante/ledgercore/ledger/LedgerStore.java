@@ -57,30 +57,48 @@ class LedgerStore {
 
     PostedTransfer findPostedTransfer(String actor, String key) {
         return jdbc.sql("""
-                SELECT id, debit_account_id, credit_account_id, currency, amount, posted_at
+                SELECT id, debit_account_id, credit_account_id, currency, amount, posted_at, reverses_transfer_id
                 FROM posted_transfer WHERE actor = :actor AND request_key = :key
                 """)
                 .param("actor", actor).param("key", key)
                 .query((rs, row) -> postedTransfer(rs)).single();
     }
 
-    PostedTransfer postTransfer(UUID id, String actor, String key, TransferCommand command) {
+    Optional<PostedTransfer> findReversibleTransfer(String actor, UUID id) {
+        return jdbc.sql("""
+                SELECT t.id, t.debit_account_id, t.credit_account_id, t.currency, t.amount, t.posted_at,
+                       t.reverses_transfer_id
+                FROM posted_transfer t JOIN ledger_account credit ON credit.id = t.credit_account_id
+                WHERE t.id = :id AND credit.owner_name = :actor AND t.reverses_transfer_id IS NULL
+                """)
+                .param("id", id).param("actor", actor)
+                .query((rs, row) -> postedTransfer(rs)).optional();
+    }
+
+    boolean hasReversal(UUID transferId) {
+        return jdbc.sql("SELECT EXISTS (SELECT 1 FROM posted_transfer WHERE reverses_transfer_id = :id)")
+                .param("id", transferId).query(Boolean.class).single();
+    }
+
+    PostedTransfer postTransfer(UUID id, String actor, String key, TransferCommand command, UUID reversesTransferId) {
         return jdbc.sql("""
                 INSERT INTO posted_transfer (id, actor, request_key, debit_account_id, credit_account_id,
-                                             currency, amount)
-                VALUES (:id, :actor, :key, :debit, :credit, :currency, :amount)
-                RETURNING id, debit_account_id, credit_account_id, currency, amount, posted_at
+                                             currency, amount, reverses_transfer_id)
+                VALUES (:id, :actor, :key, :debit, :credit, :currency, :amount, :original)
+                RETURNING id, debit_account_id, credit_account_id, currency, amount, posted_at, reverses_transfer_id
                 """)
                 .param("id", id).param("actor", actor).param("key", key)
                 .param("debit", command.debitAccountId()).param("credit", command.creditAccountId())
                 .param("currency", command.currency()).param("amount", command.amount())
+                .param("original", reversesTransferId)
                 .query((rs, row) -> postedTransfer(rs)).single();
     }
 
     private static PostedTransfer postedTransfer(ResultSet rs) throws SQLException {
         return new PostedTransfer(rs.getObject("id", UUID.class), rs.getObject("debit_account_id", UUID.class),
                 rs.getObject("credit_account_id", UUID.class), rs.getString("currency"),
-                rs.getBigDecimal("amount"), rs.getObject("posted_at", OffsetDateTime.class).toInstant());
+                rs.getBigDecimal("amount"), rs.getObject("posted_at", OffsetDateTime.class).toInstant(),
+                rs.getObject("reverses_transfer_id", UUID.class));
     }
 
     record Account(UUID id, String owner, String currency) {}

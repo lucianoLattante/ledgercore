@@ -16,4 +16,4 @@ Acquire row locks on both accounts in UUID order and read the balance in a subse
 
 An interrupted transaction commits both entries or neither. Deterministic lock order prevents reversed account pairs from creating a lock cycle. Computing balances from indexed journal entries avoids a second writable balance field. Read cost grows with account history. A later projection can reduce that cost if measurements justify it.
 
-An opening balance acts as a fixed fixture in this increment. Future corrections should post compensating entries, and production operation would need distinct migration and application database roles, including protected account opening data.
+An opening balance acts as a fixed fixture in this increment. A reversal posts a new compensating transfer linked to the immutable original. The original recipient authorizes the debit, and the same balance check and account lock order apply. A unique constraint allows one reversal per original, and the application accepts only original postings as reversal targets. Production operation would need distinct migration and application database roles, including protected account opening data.
