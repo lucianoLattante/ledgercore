@@ -89,6 +89,21 @@ The first request returns `201` and a new posting with `reversesTransferId`. A r
 
 The reversal debits the original recipient and credits the original sender. Both postings remain in the journal. For the stated demo balances, reversing the transfer returns Alice to `100.00 ARS` and Bob to `50.00 ARS`.
 
+## Movements and reconciliation
+
+Use the same local demo credentials and an account UUID from the demo above.
+
+```sh
+curl --user "alice:${LEDGERCORE_ALICE_PASSWORD}" \
+  'http://127.0.0.1:8080/api/accounts/00000000-0000-0000-0000-000000000001/movements?limit=2'
+curl --user "alice:${LEDGERCORE_ALICE_PASSWORD}" \
+  'http://127.0.0.1:8080/api/accounts/00000000-0000-0000-0000-000000000001/reconciliation'
+```
+
+The movement API returns signed decimal deltas and timestamps in descending posting order, using transfer ID as the tie-breaker. If `nextBefore` is present, give it as the next request's `before` value. Limits range from 1 to 100. A cursor must refer to a movement on the same account. Both routes return 404 for other owners. Each page uses its own read snapshot.
+
+Reconciliation returns the persisted opening balance, independent totals over postings and the journal view, row counts and a consistency flag. Both totals use the same database snapshot. The opening rows in the demo come from [the seed script](src/main/resources/db/demo/R__seed_demo_accounts.sql). Migration V3 freezes each existing opening amount. It cannot infer the provenance of accounts provisioned outside the demo. Use compensating postings to correct posted transfers.
+
 ## Tests
 
 ```bash

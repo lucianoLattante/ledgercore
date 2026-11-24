@@ -7,6 +7,7 @@ public final class LedgerException extends RuntimeException {
         TRANSFER_ALREADY_REVERSED,
         TRANSFER_TO_SAME_ACCOUNT,
         CURRENCY_MISMATCH,
+        INVALID_PAGE_SIZE,
         INVALID_AMOUNT,
         INSUFFICIENT_FUNDS,
         IDEMPOTENCY_CONFLICT

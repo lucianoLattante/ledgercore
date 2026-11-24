@@ -3,6 +3,9 @@ package io.github.lucianolattante.ledgercore.ledger;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.math.BigDecimal;
+import io.github.lucianolattante.ledgercore.ledger.LedgerService.Movement;
+import io.github.lucianolattante.ledgercore.ledger.LedgerService.Reconciliation;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -54,6 +57,72 @@ class LedgerStore {
                         rs.getString("currency"), rs.getBigDecimal("balance")))
                 .optional();
     }
+
+    boolean ownsAccount(String actor, UUID accountId) {
+        return jdbc.sql("SELECT EXISTS (SELECT 1 FROM ledger_account WHERE id = :account AND owner_name = :actor)")
+                .param("account", accountId).param("actor", actor).query(Boolean.class).single();
+    }
+
+    Optional<MovementCursor> movementCursor(UUID accountId, UUID transferId) {
+        return jdbc.sql("""
+                SELECT id, posted_at FROM posted_transfer
+                WHERE id = :id AND (debit_account_id = :account OR credit_account_id = :account)
+                """)
+                .param("account", accountId).param("id", transferId)
+                .query((rs, row) -> new MovementCursor(rs.getObject("id", UUID.class),
+                        rs.getObject("posted_at", OffsetDateTime.class))).optional();
+    }
+
+    List<Movement> movements(UUID accountId, MovementCursor cursor, int limit) {
+        String sql = """
+                SELECT id, posted_at, currency,
+                       CASE WHEN debit_account_id = :account THEN -amount ELSE amount END AS delta,
+                       reverses_transfer_id
+                FROM posted_transfer
+                WHERE (debit_account_id = :account OR credit_account_id = :account)
+                """;
+        if (cursor != null) sql += " AND (posted_at, id) < (:beforeTime, :beforeId)";
+        var statement = jdbc.sql(sql + " ORDER BY posted_at DESC, id DESC LIMIT :limit")
+                .param("account", accountId).param("limit", limit);
+        if (cursor != null) statement.param("beforeTime", cursor.postedAt()).param("beforeId", cursor.transferId());
+        return statement.query((rs, row) -> new Movement(
+                rs.getObject("id", UUID.class), rs.getObject("posted_at", OffsetDateTime.class).toInstant(),
+                rs.getString("currency"), rs.getBigDecimal("delta"), rs.getObject("reverses_transfer_id", UUID.class)
+        )).list();
+    }
+
+    Optional<Reconciliation> reconciliation(String actor, UUID accountId) {
+        return jdbc.sql("""
+                SELECT a.id, a.currency, a.opening_balance,
+                       a.opening_balance + transfers.delta AS transfer_balance,
+                       a.opening_balance + journal.delta AS journal_balance,
+                       transfers.count AS transfer_count, journal.count AS journal_count
+                FROM ledger_account a
+                CROSS JOIN LATERAL (
+                    SELECT count(*) AS count, COALESCE(SUM(CASE WHEN debit_account_id = a.id
+                        THEN -amount ELSE amount END), 0) AS delta
+                    FROM posted_transfer WHERE debit_account_id = a.id OR credit_account_id = a.id
+                ) transfers
+                CROSS JOIN LATERAL (
+                    SELECT count(*) AS count, COALESCE(SUM(delta), 0) AS delta
+                    FROM journal_entry WHERE account_id = a.id
+                ) journal
+                WHERE a.id = :account AND a.owner_name = :actor
+                """)
+                .param("account", accountId).param("actor", actor)
+                .query((rs, row) -> {
+                    BigDecimal transferBalance = rs.getBigDecimal("transfer_balance");
+                    BigDecimal journalBalance = rs.getBigDecimal("journal_balance");
+                    long transferCount = rs.getLong("transfer_count");
+                    long journalCount = rs.getLong("journal_count");
+                    return new Reconciliation(rs.getObject("id", UUID.class), rs.getString("currency"),
+                            rs.getBigDecimal("opening_balance"), transferBalance, journalBalance,
+                            transferCount, journalCount,
+                            transferCount == journalCount && transferBalance.compareTo(journalBalance) == 0);
+                }).optional();
+    }
+
+    record MovementCursor(UUID transferId, OffsetDateTime postedAt) {}
 
     PostedTransfer findPostedTransfer(String actor, String key) {
         return jdbc.sql("""

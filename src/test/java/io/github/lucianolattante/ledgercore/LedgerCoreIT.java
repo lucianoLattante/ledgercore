@@ -246,6 +246,52 @@ class LedgerCoreIT {
         assertBalance("alice", alice, "99.00");
     }
 
+    @Test
+    void pagesOnlyOwnedMovementsAndReconcilesARetriedReversal() throws Exception {
+        String firstKey = UUID.randomUUID().toString();
+        var first = transfer("alice", firstKey, alice, bob, "ARS", "20.00");
+        UUID firstId = UUID.fromString(body(first).get("id").asText());
+        assertThat(status(transfer("alice", firstKey, alice, bob, "ARS", "20.00"))).isEqualTo(200);
+        var second = transfer("alice", UUID.randomUUID().toString(), alice, bob, "ARS", "5.00");
+        assertThat(status(second)).isEqualTo(201);
+        String reversalKey = UUID.randomUUID().toString();
+        assertThat(status(reversal("bob", reversalKey, firstId))).isEqualTo(201);
+        assertThat(status(reversal("bob", reversalKey, firstId))).isEqualTo(200);
+
+        var page = http.perform(get("/api/accounts/{id}/movements", alice)
+                .param("limit", "2").header("Authorization", basic("alice"))).andReturn();
+        assertThat(status(page)).isEqualTo(200);
+        var root = body(page);
+        assertThat(root.get("movements").size()).isEqualTo(2);
+        String cursor = root.get("nextBefore").asText();
+        var tail = body(http.perform(get("/api/accounts/{id}/movements", alice)
+                .param("limit", "2").param("before", cursor).header("Authorization", basic("alice"))).andReturn());
+        assertThat(tail.get("movements").size()).isEqualTo(1);
+        assertThat(tail.get("movements").get(0).get("transferId").asText()).isNotEqualTo(cursor);
+        assertThat(tail.has("nextBefore")).isFalse();
+
+        assertProblem(http.perform(get("/api/accounts/{id}/movements", alice)
+                .header("Authorization", basic("bob"))).andReturn(), 404, "account_not_found");
+        assertProblem(http.perform(get("/api/accounts/{id}/movements", bobReserve)
+                .param("before", firstId.toString()).header("Authorization", basic("bob"))).andReturn(),
+                404, "transfer_not_found");
+        assertProblem(http.perform(get("/api/accounts/{id}/movements", alice)
+                .param("limit", "101").header("Authorization", basic("alice"))).andReturn(), 400, "invalid_request");
+        assertProblem(http.perform(get("/api/accounts/{id}/reconciliation", alice)
+                .header("Authorization", basic("bob"))).andReturn(), 404, "account_not_found");
+
+        var report = body(http.perform(get("/api/accounts/{id}/reconciliation", alice)
+                .header("Authorization", basic("alice"))).andReturn());
+        assertThat(report.get("openingBalance").decimalValue()).isEqualByComparingTo("100.00");
+        assertThat(report.get("transferBalance").decimalValue()).isEqualByComparingTo("95.00");
+        assertThat(report.get("journalBalance").decimalValue()).isEqualByComparingTo("95.00");
+        assertThat(report.get("transferCount").asInt()).isEqualTo(3);
+        assertThat(report.get("journalEntryCount").asInt()).isEqualTo(3);
+        assertThat(report.get("reconciled").asBoolean()).isTrue();
+        assertThatThrownBy(() -> jdbc.sql("UPDATE ledger_account SET opening_balance = 500 WHERE id = :id")
+                .param("id", alice).update()).isInstanceOf(DataAccessException.class);
+    }
+
     private UUID account(String actor, String currency, String amount) {
         UUID id = UUID.randomUUID();
         jdbc.sql("INSERT INTO ledger_account (id, owner_name, currency, opening_balance) VALUES (:id, :actor, :currency, :amount)")
