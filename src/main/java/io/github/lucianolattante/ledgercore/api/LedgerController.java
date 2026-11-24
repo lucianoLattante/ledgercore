@@ -8,6 +8,9 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Max;
+import org.springframework.web.bind.annotation.RequestParam;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -60,6 +63,18 @@ class LedgerController {
     @GetMapping("/accounts/{accountId}")
     AccountBalance balance(Principal principal, @PathVariable UUID accountId) {
         return ledger.balance(principal.getName(), accountId);
+    }
+
+    @GetMapping("/accounts/{accountId}/movements")
+    LedgerService.MovementPage movements(Principal principal, @PathVariable UUID accountId,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit,
+            @RequestParam(required = false) UUID before) {
+        return ledger.movements(principal.getName(), accountId, limit, before);
+    }
+
+    @GetMapping("/accounts/{accountId}/reconciliation")
+    LedgerService.Reconciliation reconciliation(Principal principal, @PathVariable UUID accountId) {
+        return ledger.reconcile(principal.getName(), accountId);
     }
 
     record TransferRequest(

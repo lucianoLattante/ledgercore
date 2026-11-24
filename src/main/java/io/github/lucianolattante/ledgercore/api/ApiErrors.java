@@ -28,7 +28,7 @@ class ApiErrors {
                     "Debit and credit accounts must differ.");
             case CURRENCY_MISMATCH -> problem(HttpStatus.UNPROCESSABLE_ENTITY, "currency_mismatch",
                     "Both accounts must match the requested currency.");
-            case INVALID_AMOUNT -> invalidRequest();
+            case INVALID_AMOUNT, INVALID_PAGE_SIZE -> invalidRequest();
             case INSUFFICIENT_FUNDS -> problem(HttpStatus.CONFLICT, "insufficient_funds",
                     "The debit account has insufficient funds.");
             case IDEMPOTENCY_CONFLICT -> problem(HttpStatus.CONFLICT, "idempotency_conflict",

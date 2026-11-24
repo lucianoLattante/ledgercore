@@ -3,6 +3,7 @@ package io.github.lucianolattante.ledgercore.ledger;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import org.springframework.stereotype.Service;
@@ -79,6 +80,33 @@ public class LedgerService {
     public AccountBalance balance(String actor, UUID accountId) {
         return store.balance(actor, accountId).orElseThrow(() -> new LedgerException(ACCOUNT_NOT_FOUND));
     }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public MovementPage movements(String actor, UUID accountId, int limit, UUID before) {
+        if (limit < 1 || limit > 100) throw new LedgerException(INVALID_PAGE_SIZE);
+        if (!store.ownsAccount(actor, accountId)) throw new LedgerException(ACCOUNT_NOT_FOUND);
+        var cursor = before == null ? null : store.movementCursor(accountId, before)
+                .orElseThrow(() -> new LedgerException(TRANSFER_NOT_FOUND));
+        var rows = store.movements(accountId, cursor, limit + 1);
+        if (rows.size() <= limit) return new MovementPage(rows, null);
+        return new MovementPage(List.copyOf(rows.subList(0, limit)), rows.get(limit - 1).transferId());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public Reconciliation reconcile(String actor, UUID accountId) {
+        return store.reconciliation(actor, accountId)
+                .orElseThrow(() -> new LedgerException(ACCOUNT_NOT_FOUND));
+    }
+
+    public record Movement(UUID transferId, Instant postedAt, String currency, BigDecimal delta,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) UUID reversesTransferId) {}
+
+    public record MovementPage(List<Movement> movements,
+                               @JsonInclude(JsonInclude.Include.NON_NULL) UUID nextBefore) {}
+
+    public record Reconciliation(UUID accountId, String currency, BigDecimal openingBalance,
+                                 BigDecimal transferBalance, BigDecimal journalBalance,
+                                 long transferCount, long journalEntryCount, boolean reconciled) {}
 
     public record TransferCommand(UUID debitAccountId, UUID creditAccountId, String currency, BigDecimal amount) {
         public TransferCommand {
