@@ -2,6 +2,7 @@ package io.github.lucianolattante.ledgercore;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -11,14 +12,19 @@ import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -36,6 +42,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest(properties = {
         "ledgercore.demo.alice-password=alice-integration-fixture",
         "ledgercore.demo.bob-password=bob-integration-fixture",
+        "LEDGERCORE_FLYWAY_ENABLED=false",
         "spring.datasource.hikari.connection-init-sql=SET statement_timeout = '10s'"
 })
 @AutoConfigureMockMvc
@@ -44,16 +51,34 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 class LedgerCoreIT {
     @Container
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17");
+    private static JdbcClient fixtureJdbc;
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry properties) {
-        properties.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        properties.add("spring.datasource.username", POSTGRES::getUsername);
-        properties.add("spring.datasource.password", POSTGRES::getPassword);
+        String url = POSTGRES.getJdbcUrl();
+        String migrationPassword = UUID.randomUUID().toString();
+        String runtimePassword = UUID.randomUUID().toString();
+        var provisioning = JdbcClient.create(
+                new DriverManagerDataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()));
+        provisioning.sql("CREATE ROLE ledgercore_migrator LOGIN PASSWORD '" + migrationPassword + "'").update();
+        provisioning.sql("CREATE ROLE ledgercore_runtime LOGIN PASSWORD '" + runtimePassword + "'").update();
+        provisioning.sql("GRANT USAGE, CREATE ON SCHEMA public TO ledgercore_migrator").update();
+        provisioning.sql("GRANT USAGE ON SCHEMA public TO ledgercore_runtime").update();
+
+        var migrationDataSource = new DriverManagerDataSource(url, "ledgercore_migrator", migrationPassword);
+        Flyway.configure().dataSource(migrationDataSource)
+                .locations("classpath:db/migration", "classpath:db/demo").load().migrate();
+        new ResourceDatabasePopulator(new ClassPathResource("db/permissions/runtime.sql"))
+                .execute(migrationDataSource);
+        fixtureJdbc = JdbcClient.create(migrationDataSource);
+
+        properties.add("spring.datasource.url", () -> url);
+        properties.add("spring.datasource.username", () -> "ledgercore_runtime");
+        properties.add("spring.datasource.password", () -> runtimePassword);
     }
 
     @Autowired MockMvc http;
-    @Autowired JdbcClient jdbc;
+    @Autowired JdbcClient runtimeJdbc;
     @Autowired ObjectMapper json;
 
     private UUID alice;
@@ -65,6 +90,31 @@ class LedgerCoreIT {
         alice = account("alice", "ARS", "100.00");
         bob = account("bob", "ARS", "50.00");
         bobReserve = account("bob", "ARS", "0.00");
+    }
+
+    @Test
+    void runtimeCanLockAnAccountButCannotChangeProtectedObjects() {
+        assertThat(runtimeJdbc.sql("SELECT current_user").query(String.class).single())
+                .isEqualTo("ledgercore_runtime");
+        assertThat(runtimeJdbc.sql("SELECT id FROM ledger_account WHERE id = :id FOR NO KEY UPDATE")
+                .param("id", alice).query(UUID.class).single()).isEqualTo(alice);
+
+        assertRuntimeSqlState(() -> runtimeJdbc.sql("CREATE TABLE runtime_forbidden (id INTEGER)").update(), "42501");
+        assertRuntimeSqlState(
+                () -> runtimeJdbc.sql("SELECT COUNT(*) FROM flyway_schema_history").query(Long.class).single(), "42501");
+        assertRuntimeSqlState(() -> runtimeJdbc.sql("INSERT INTO ledger_account DEFAULT VALUES").update(), "42501");
+        assertRuntimeSqlState(() -> runtimeJdbc.sql("UPDATE ledger_account SET owner_name = owner_name").update(), "42501");
+        assertRuntimeSqlState(() -> runtimeJdbc.sql("UPDATE posted_transfer SET amount = amount").update(), "42501");
+        assertRuntimeSqlState(() -> runtimeJdbc.sql("DELETE FROM posted_transfer WHERE FALSE").update(), "42501");
+        assertRuntimeSqlState(
+                () -> runtimeJdbc.sql("UPDATE ledger_account SET opening_balance = opening_balance + 1").update(), "23514");
+    }
+
+    private void assertRuntimeSqlState(ThrowingCallable operation, String expected) {
+        assertThatThrownBy(operation)
+                .isInstanceOf(DataAccessException.class)
+                .satisfies(error -> assertThat(error.getCause()).isInstanceOfSatisfying(
+                        SQLException.class, cause -> assertThat(cause.getSQLState()).isEqualTo(expected)));
     }
 
     @Test
@@ -84,12 +134,12 @@ class LedgerCoreIT {
         assertProblem(transfer("alice", key, alice, bob, "USD", "25.50"), 409, "idempotency_conflict");
 
         UUID transferId = UUID.fromString(body(first).get("id").asText());
-        assertThat(jdbc.sql("SELECT delta FROM journal_entry WHERE transfer_id = :id ORDER BY delta")
+        assertThat(fixtureJdbc.sql("SELECT delta FROM journal_entry WHERE transfer_id = :id ORDER BY delta")
                 .param("id", transferId).query(BigDecimal.class).list())
                 .containsExactly(new BigDecimal("-25.50"), new BigDecimal("25.50"));
-        assertThatThrownBy(() -> jdbc.sql("UPDATE posted_transfer SET amount = 1 WHERE id = :id")
+        assertThatThrownBy(() -> fixtureJdbc.sql("UPDATE posted_transfer SET amount = 1 WHERE id = :id")
                 .param("id", transferId).update()).isInstanceOf(DataAccessException.class);
-        assertThatThrownBy(() -> jdbc.sql("DELETE FROM posted_transfer WHERE id = :id")
+        assertThatThrownBy(() -> fixtureJdbc.sql("DELETE FROM posted_transfer WHERE id = :id")
                 .param("id", transferId).update()).isInstanceOf(DataAccessException.class);
         assertBalance("alice", alice, "74.50");
         assertBalance("bob", bob, "75.50");
@@ -193,7 +243,7 @@ class LedgerCoreIT {
     @Test
     void journalWriteFailureRollsBackBothEntriesAndReleasesTheRequestKey() throws Exception {
         String key = UUID.randomUUID().toString();
-        jdbc.sql("""
+        fixtureJdbc.sql("""
                 CREATE FUNCTION test_reject_transfer() RETURNS trigger LANGUAGE plpgsql AS $$
                 BEGIN
                     RAISE EXCEPTION 'synthetic write failure';
@@ -201,7 +251,7 @@ class LedgerCoreIT {
                 $$
                 """).update();
         try {
-            jdbc.sql("""
+            fixtureJdbc.sql("""
                     CREATE TRIGGER test_reject_transfer AFTER INSERT ON posted_transfer
                     FOR EACH ROW EXECUTE FUNCTION test_reject_transfer()
                     """).update();
@@ -209,13 +259,13 @@ class LedgerCoreIT {
                 assertProblem(transfer("alice", key, alice, bob, "ARS", "12.00"), 500, "database_error");
                 assertBalance("alice", alice, "100.00");
                 assertBalance("bob", bob, "50.00");
-                assertThat(jdbc.sql("SELECT COUNT(*) FROM transfer_request WHERE actor = 'alice' AND request_key = :key")
+                assertThat(fixtureJdbc.sql("SELECT COUNT(*) FROM transfer_request WHERE actor = 'alice' AND request_key = :key")
                         .param("key", key).query(Long.class).single()).isZero();
             } finally {
-                jdbc.sql("DROP TRIGGER test_reject_transfer ON posted_transfer").update();
+                fixtureJdbc.sql("DROP TRIGGER test_reject_transfer ON posted_transfer").update();
             }
         } finally {
-            jdbc.sql("DROP FUNCTION test_reject_transfer()").update();
+            fixtureJdbc.sql("DROP FUNCTION test_reject_transfer()").update();
         }
         assertThat(status(transfer("alice", key, alice, bob, "ARS", "12.00"))).isEqualTo(201);
         assertBalance("alice", alice, "88.00");
@@ -288,13 +338,13 @@ class LedgerCoreIT {
         assertThat(report.get("transferCount").asInt()).isEqualTo(3);
         assertThat(report.get("journalEntryCount").asInt()).isEqualTo(3);
         assertThat(report.get("reconciled").asBoolean()).isTrue();
-        assertThatThrownBy(() -> jdbc.sql("UPDATE ledger_account SET opening_balance = 500 WHERE id = :id")
+        assertThatThrownBy(() -> fixtureJdbc.sql("UPDATE ledger_account SET opening_balance = 500 WHERE id = :id")
                 .param("id", alice).update()).isInstanceOf(DataAccessException.class);
     }
 
     private UUID account(String actor, String currency, String amount) {
         UUID id = UUID.randomUUID();
-        jdbc.sql("INSERT INTO ledger_account (id, owner_name, currency, opening_balance) VALUES (:id, :actor, :currency, :amount)")
+        fixtureJdbc.sql("INSERT INTO ledger_account (id, owner_name, currency, opening_balance) VALUES (:id, :actor, :currency, :amount)")
                 .param("id", id).param("actor", actor).param("currency", currency)
                 .param("amount", new BigDecimal(amount)).update();
         return id;
