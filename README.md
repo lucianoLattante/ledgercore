@@ -104,6 +104,10 @@ The movement API returns signed decimal deltas and timestamps in descending post
 
 Reconciliation returns the persisted opening balance, independent totals over postings and the journal view, row counts and a consistency flag. Both totals use the same database snapshot. The opening rows in the demo come from [the seed script](src/main/resources/db/demo/R__seed_demo_accounts.sql). Migration V3 freezes each existing opening amount. It cannot infer the provenance of accounts provisioned outside the demo. Use compensating postings to correct posted transfers.
 
+## Database roles
+
+For a separate migration process and a restricted API database account, see [Database roles](docs/DATABASE_ROLES.md). The Compose demo above keeps its single-user setup.
+
 ## Tests
 
 ```bash
